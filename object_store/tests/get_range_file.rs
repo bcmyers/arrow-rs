@@ -23,6 +23,7 @@ use futures::stream::BoxStream;
 use object_store::local::LocalFileSystem;
 use object_store::path::Path;
 use object_store::*;
+use std::collections::HashMap;
 use std::fmt::Formatter;
 use tempfile::tempdir;
 
@@ -75,6 +76,22 @@ impl ObjectStore for MyStore {
     }
 
     async fn copy_if_not_exists(&self, _: &Path, _: &Path) -> Result<()> {
+        todo!()
+    }
+
+    async fn update_object_attributes(&self, _: &Path, _: Attributes) -> Result<()> {
+        todo!()
+    }
+
+    async fn get_object_attributes(&self, _: &Path) -> Result<Attributes> {
+        todo!()
+    }
+
+    async fn set_object_tags(&self, _: &Path, _: HashMap<String, String>) -> Result<()> {
+        todo!()
+    }
+
+    async fn get_object_tags(&self, _: &Path) -> Result<HashMap<String, String>> {
         todo!()
     }
 }

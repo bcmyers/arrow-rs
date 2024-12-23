@@ -29,7 +29,7 @@ use crate::client::list::ListClient;
 use crate::client::retry::RetryExt;
 use crate::client::s3::{
     CompleteMultipartUpload, CompleteMultipartUploadResult, InitiateMultipartUploadResult,
-    ListResponse,
+    ListResponse, Tagging,
 };
 use crate::client::GetOptionsExt;
 use crate::multipart::PartId;
@@ -57,11 +57,14 @@ use ring::digest;
 use ring::digest::Context;
 use serde::{Deserialize, Serialize};
 use snafu::{ResultExt, Snafu};
+use std::collections::HashMap;
+use std::ops::Deref;
 use std::sync::Arc;
 
 const VERSION_HEADER: &str = "x-amz-version-id";
 const SHA256_CHECKSUM: &str = "x-amz-checksum-sha256";
 const USER_DEFINED_METADATA_HEADER_PREFIX: &str = "x-amz-meta-";
+const AMZ_METADATA_HEADER_PREFIX: &str = "x-amz-";
 
 /// A specialized `Error` for object store-related errors
 #[derive(Debug, Snafu)]
@@ -110,6 +113,12 @@ pub(crate) enum Error {
 
     #[snafu(display("Got invalid multipart response: {}", source))]
     InvalidMultipartResponse { source: quick_xml::de::DeError },
+
+    #[snafu(display("Error fetching metadata response body: {}", source))]
+    GetMetadataBody { source: reqwest::Error },
+
+    #[snafu(display("Got invalid tags response: {}", source))]
+    InvalidTagsResponse { source: quick_xml::de::DeError },
 
     #[snafu(display("Unable to extract metadata from headers: {}", source))]
     Metadata {
@@ -317,7 +326,7 @@ impl<'a> Request<'a> {
     pub fn with_attributes(self, attributes: Attributes) -> Self {
         let mut has_content_type = false;
         let mut builder = self.builder;
-        for (k, v) in &attributes {
+        for (k, v) in attributes.iter_set_values() {
             builder = match k {
                 Attribute::CacheControl => builder.header(CACHE_CONTROL, v.as_ref()),
                 Attribute::ContentDisposition => builder.header(CONTENT_DISPOSITION, v.as_ref()),
@@ -331,6 +340,9 @@ impl<'a> Request<'a> {
                     &format!("{}{}", USER_DEFINED_METADATA_HEADER_PREFIX, k_suffix),
                     v.as_ref(),
                 ),
+                Attribute::ProviderSpecific(attr_name) => {
+                    builder.header(attr_name.deref(), v.as_ref())
+                }
             };
         }
 
@@ -624,8 +636,7 @@ impl S3Client {
         })
     }
 
-    #[cfg(test)]
-    pub async fn get_object_tagging(&self, path: &Path) -> Result<Response> {
+    pub async fn get_object_tagging(&self, path: &Path) -> Result<Tagging> {
         let credential = self.config.get_session_credential().await?;
         let url = format!("{}?tagging", self.config.path_url(path));
         let response = self
@@ -634,8 +645,31 @@ impl S3Client {
             .with_aws_sigv4(credential.authorizer(), None)
             .send_retry(&self.config.retry_config)
             .await
-            .map_err(|e| e.error(STORE, path.to_string()))?;
+            .map_err(|e| e.error(STORE, path.to_string()))?
+            .bytes()
+            .await
+            .context(GetMetadataBodySnafu)?;
+        let response: Tagging =
+            quick_xml::de::from_reader(response.reader()).context(InvalidTagsResponseSnafu)?;
         Ok(response)
+    }
+
+    pub async fn set_object_tags(&self, path: &Path, tags: HashMap<String, String>) -> Result<()> {
+        let credential = self.config.get_session_credential().await?;
+        let url = format!("{}?tagging", self.config.path_url(path));
+        let request = Tagging::from(tags);
+        let body = request.to_xml_document()?;
+
+        self.client
+            .request(Method::PUT, url)
+            .header(CONTENT_TYPE, "application/xml")
+            .body(body)
+            .with_aws_sigv4(credential.authorizer(), None)
+            .send_retry(&self.config.retry_config)
+            .await
+            .map_err(|e| e.error(STORE, path.to_string()))?;
+
+        Ok(())
     }
 }
 
@@ -648,6 +682,7 @@ impl GetClient for S3Client {
         last_modified_required: false,
         version_header: Some(VERSION_HEADER),
         user_defined_metadata_prefix: Some(USER_DEFINED_METADATA_HEADER_PREFIX),
+        provider_specific_metadata_prefix: Some(AMZ_METADATA_HEADER_PREFIX),
     };
 
     /// Make an S3 GET request <https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetObject.html>

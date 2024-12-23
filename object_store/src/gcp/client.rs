@@ -45,11 +45,13 @@ use reqwest::header::HeaderName;
 use reqwest::{Client, Method, RequestBuilder, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 use snafu::{OptionExt, ResultExt, Snafu};
+use std::ops::Deref;
 use std::sync::Arc;
 
 const VERSION_HEADER: &str = "x-goog-generation";
 const DEFAULT_CONTENT_TYPE: &str = "application/octet-stream";
 const USER_DEFINED_METADATA_HEADER_PREFIX: &str = "x-goog-meta-";
+const GOOG_METADATA_HEADER_PREFIX: &str = "x-goog-";
 
 static VERSION_MATCH: HeaderName = HeaderName::from_static("x-goog-if-generation-match");
 
@@ -63,6 +65,9 @@ enum Error {
 
     #[snafu(display("Got invalid list response: {}", source))]
     InvalidListResponse { source: quick_xml::de::DeError },
+
+    #[snafu(display("Error serializing metadata: {}", source))]
+    InvalidMetadata { source: serde_json::Error },
 
     #[snafu(display("Error performing get request {}: {}", path, source))]
     GetRequest {
@@ -81,6 +86,12 @@ enum Error {
 
     #[snafu(display("Got invalid put response: {}", source))]
     InvalidPutResponse { source: quick_xml::de::DeError },
+
+    #[snafu(display("Error performing post request {}: {}", path, source))]
+    PostRequest {
+        source: crate::client::retry::Error,
+        path: String,
+    },
 
     #[snafu(display("Unable to extract metadata from headers: {}", source))]
     Metadata {
@@ -190,7 +201,7 @@ impl<'a> Request<'a> {
     fn with_attributes(self, attributes: Attributes) -> Self {
         let mut builder = self.builder;
         let mut has_content_type = false;
-        for (k, v) in &attributes {
+        for (k, v) in attributes.iter_set_values() {
             builder = match k {
                 Attribute::CacheControl => builder.header(CACHE_CONTROL, v.as_ref()),
                 Attribute::ContentDisposition => builder.header(CONTENT_DISPOSITION, v.as_ref()),
@@ -204,6 +215,9 @@ impl<'a> Request<'a> {
                     &format!("{}{}", USER_DEFINED_METADATA_HEADER_PREFIX, k_suffix),
                     v.as_ref(),
                 ),
+                Attribute::ProviderSpecific(attr_name) => {
+                    builder.header(attr_name.deref(), v.as_ref())
+                }
             };
         }
 
@@ -348,6 +362,14 @@ impl GoogleCloudStorageClient {
         let encoded = utf8_percent_encode(path.as_ref(), NON_ALPHANUMERIC);
         format!(
             "{}/{}/{}",
+            self.config.base_url, self.bucket_name_encoded, encoded
+        )
+    }
+
+    pub fn object_url_json(&self, path: &Path) -> String {
+        let encoded = utf8_percent_encode(path.as_ref(), NON_ALPHANUMERIC);
+        format!(
+            "{}/storage/v1/b/{}/o/{}",
             self.config.base_url, self.bucket_name_encoded, encoded
         )
     }
@@ -563,6 +585,70 @@ impl GoogleCloudStorageClient {
 
         Ok(())
     }
+
+    pub async fn update_object_attributes(
+        &self,
+        path: &Path,
+        attributes: Attributes,
+    ) -> Result<()> {
+        let credential = self.get_credential().await?;
+        let url = self.object_url_json(path);
+
+        let mut body = serde_json::Map::new();
+        for (k, v) in attributes.iter() {
+            let attr_val = match v {
+                None => serde_json::Value::Null,
+                Some(v) => serde_json::Value::String(v.to_string()),
+            };
+            match k {
+                Attribute::ContentDisposition => {
+                    body.insert("contentDisposition".to_string(), attr_val)
+                }
+                Attribute::ContentEncoding => body.insert("contentEncoding".to_string(), attr_val),
+                Attribute::ContentLanguage => body.insert("contentLanguage".to_string(), attr_val),
+                Attribute::ContentType => body.insert("contentType".to_string(), attr_val),
+                Attribute::CacheControl => body.insert("cacheControl".to_string(), attr_val),
+                Attribute::Metadata(attr_name) => body
+                    .entry("metadata")
+                    .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
+                    .as_object_mut()
+                    .unwrap()
+                    .insert(attr_name.to_string(), attr_val),
+                Attribute::ProviderSpecific(attr_name) => {
+                    body.insert(kebab_to_camel(attr_name), attr_val)
+                }
+            };
+        }
+
+        self.client
+            .request(Method::PATCH, url)
+            .bearer_auth(&credential.bearer)
+            .header(CONTENT_TYPE, "application/json")
+            .body(serde_json::to_string(&body).context(InvalidMetadataSnafu)?)
+            .send_retry(&self.config.retry_config)
+            .await
+            .context(PostRequestSnafu {
+                path: path.as_ref(),
+            })?;
+
+        Ok(())
+    }
+}
+
+fn kebab_to_camel(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut capitalize = false;
+    for c in s.chars() {
+        if c == '-' {
+            capitalize = true;
+        } else if capitalize {
+            result.push(c.to_ascii_uppercase());
+            capitalize = false;
+        } else {
+            result.push(c);
+        }
+    }
+    result
 }
 
 #[async_trait]
@@ -573,6 +659,7 @@ impl GetClient for GoogleCloudStorageClient {
         last_modified_required: true,
         version_header: Some(VERSION_HEADER),
         user_defined_metadata_prefix: Some(USER_DEFINED_METADATA_HEADER_PREFIX),
+        provider_specific_metadata_prefix: Some(GOOG_METADATA_HEADER_PREFIX),
     };
 
     /// Perform a get request <https://cloud.google.com/storage/docs/xml-api/get-object-download>

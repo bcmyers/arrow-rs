@@ -36,6 +36,7 @@ use futures::stream::BoxStream;
 use futures::{StreamExt, TryStreamExt};
 use itertools::Itertools;
 use snafu::{OptionExt, ResultExt, Snafu};
+use std::collections::HashMap;
 use url::Url;
 
 use crate::client::get::GetClientExt;
@@ -43,8 +44,9 @@ use crate::client::header::get_etag;
 use crate::http::client::Client;
 use crate::path::Path;
 use crate::{
-    ClientConfigKey, ClientOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta,
-    ObjectStore, PutMode, PutMultipartOpts, PutOptions, PutPayload, PutResult, Result, RetryConfig,
+    Attributes, ClientConfigKey, ClientOptions, GetOptions, GetResult, ListResult, MultipartUpload,
+    ObjectMeta, ObjectStore, PutMode, PutMultipartOpts, PutOptions, PutPayload, PutResult, Result,
+    RetryConfig,
 };
 
 mod client;
@@ -192,6 +194,22 @@ impl ObjectStore for HttpStore {
 
     async fn copy_if_not_exists(&self, from: &Path, to: &Path) -> Result<()> {
         self.client.copy(from, to, false).await
+    }
+
+    async fn update_object_attributes(&self, _: &Path, _: Attributes) -> Result<()> {
+        Err(crate::Error::NotImplemented)
+    }
+
+    async fn get_object_attributes(&self, _: &Path) -> Result<Attributes> {
+        Err(crate::Error::NotImplemented)
+    }
+
+    async fn set_object_tags(&self, _: &Path, _: HashMap<String, String>) -> Result<()> {
+        Err(crate::Error::NotImplemented)
+    }
+
+    async fn get_object_tags(&self, _: &Path) -> Result<HashMap<String, String>> {
+        Err(crate::Error::NotImplemented)
     }
 }
 

@@ -33,6 +33,7 @@ use percent_encoding::percent_decode_str;
 use reqwest::{Method, Response, StatusCode};
 use serde::Deserialize;
 use snafu::{OptionExt, ResultExt, Snafu};
+use std::ops::Deref;
 use url::Url;
 
 #[derive(Debug, Snafu)]
@@ -171,7 +172,7 @@ impl Client {
             let mut builder = self.client.put(url);
 
             let mut has_content_type = false;
-            for (k, v) in &attributes {
+            for (k, v) in attributes.iter_set_values() {
                 builder = match k {
                     Attribute::CacheControl => builder.header(CACHE_CONTROL, v.as_ref()),
                     Attribute::ContentDisposition => {
@@ -185,6 +186,9 @@ impl Client {
                     }
                     // Ignore metadata attributes
                     Attribute::Metadata(_) => builder,
+                    Attribute::ProviderSpecific(attr_name) => {
+                        builder.header(attr_name.deref(), v.as_ref())
+                    }
                 };
             }
 
@@ -322,6 +326,7 @@ impl GetClient for Client {
         last_modified_required: false,
         version_header: None,
         user_defined_metadata_prefix: None,
+        provider_specific_metadata_prefix: None,
     };
 
     async fn get_request(&self, path: &Path, options: GetOptions) -> Result<Response> {

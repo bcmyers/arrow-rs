@@ -188,7 +188,7 @@ fn get_result<T: GetClient>(
             $(
             if let Some(x) = $headers.get($header) {
                 let x = x.to_str().context($err)?;
-                attributes.insert($attr, x.to_string().into());
+                attributes.insert($attr, Some(x.to_string().into()));
             }
             )*
             attributes
@@ -231,7 +231,26 @@ fn get_result<T: GetClient>(
                 if let Ok(val_str) = val.to_str() {
                     attributes.insert(
                         Attribute::Metadata(suffix.to_string().into()),
-                        val_str.to_string().into(),
+                        Some(val_str.to_string().into()),
+                    );
+                } else {
+                    return Err(GetResultError::InvalidMetadata {
+                        key: key.to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    // Provider-specific metadata must be processed after user-defined metadata, since the
+    // user-defined metadata prefix usually matches the provider-specific prefix.
+    if let Some(prefix) = T::HEADER_CONFIG.provider_specific_metadata_prefix {
+        for (key, val) in response.headers() {
+            if let Some(suffix) = key.as_str().strip_prefix(prefix) {
+                if let Ok(val_str) = val.to_str() {
+                    attributes.insert(
+                        Attribute::ProviderSpecific(suffix.to_string().into()),
+                        Some(val_str.to_string().into()),
                     );
                 } else {
                     return Err(GetResultError::InvalidMetadata {
@@ -275,6 +294,7 @@ mod tests {
             last_modified_required: false,
             version_header: None,
             user_defined_metadata_prefix: Some("x-test-meta-"),
+            provider_specific_metadata_prefix: Some("x-test-"),
         };
 
         async fn get_request(&self, _: &Path, _: GetOptions) -> Result<Response> {
@@ -424,7 +444,7 @@ mod tests {
         assert_eq!(res.range, 0..12);
         assert_eq!(
             res.attributes.get(&Attribute::Metadata("foo".into())),
-            Some(&"bar".into())
+            Some(&Some("bar".into()))
         );
         let bytes = res.bytes().await.unwrap();
         assert_eq!(bytes.len(), 12);

@@ -16,14 +16,6 @@
 // under the License.
 
 //! An object store implementation for a local filesystem
-use std::fs::{metadata, symlink_metadata, File, Metadata, OpenOptions};
-use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
-use std::ops::Range;
-use std::sync::Arc;
-use std::time::SystemTime;
-use std::{collections::BTreeSet, convert::TryFrom, io};
-use std::{collections::VecDeque, path::PathBuf};
-
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
@@ -31,6 +23,14 @@ use futures::{stream::BoxStream, StreamExt};
 use futures::{FutureExt, TryStreamExt};
 use parking_lot::Mutex;
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
+use std::collections::HashMap;
+use std::fs::{metadata, symlink_metadata, File, Metadata, OpenOptions};
+use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
+use std::ops::Range;
+use std::sync::Arc;
+use std::time::SystemTime;
+use std::{collections::BTreeSet, convert::TryFrom, io};
+use std::{collections::VecDeque, path::PathBuf};
 use url::Url;
 use walkdir::{DirEntry, WalkDir};
 
@@ -38,8 +38,9 @@ use crate::{
     maybe_spawn_blocking,
     path::{absolute_path_to_url, Path},
     util::InvalidGetRange,
-    Attributes, GetOptions, GetResult, GetResultPayload, ListResult, MultipartUpload, ObjectMeta,
-    ObjectStore, PutMode, PutMultipartOpts, PutOptions, PutPayload, PutResult, Result, UploadPart,
+    Attribute, AttributeValue, Attributes, GetOptions, GetResult, GetResultPayload, ListResult,
+    MultipartUpload, ObjectMeta, ObjectStore, PutMode, PutMultipartOpts, PutOptions, PutPayload,
+    PutResult, Result, UploadPart,
 };
 
 /// A specialized `Error` for filesystem object store-related errors
@@ -156,6 +157,12 @@ pub(crate) enum Error {
 
     #[snafu(display("Upload aborted"))]
     Aborted,
+
+    #[cfg(feature = "local-attributes")]
+    #[snafu(display("Unable to serialize object attributes: {}", source))]
+    AttributesSerialization {
+        source: serde_json::Error,
+    },
 }
 
 impl From<Error> for super::Error {
@@ -351,7 +358,7 @@ fn is_valid_file_path(path: &Path) -> bool {
         Some(p) => match p.split_once('#') {
             Some((_, suffix)) if !suffix.is_empty() => {
                 // Valid if contains non-digits
-                !suffix.as_bytes().iter().all(|x| x.is_ascii_digit())
+                !suffix.as_bytes().iter().all(|x| x.is_ascii_digit()) && suffix != "attrs"
             }
             _ => true,
         },
@@ -371,6 +378,7 @@ impl ObjectStore for LocalFileSystem {
             return Err(crate::Error::NotImplemented);
         }
 
+        #[cfg(not(feature = "local-attributes"))]
         if !opts.attributes.is_empty() {
             return Err(crate::Error::NotImplemented);
         }
@@ -421,6 +429,26 @@ impl ObjectStore for LocalFileSystem {
                 return Err(err.into());
             }
 
+            #[cfg(feature = "local-attributes")]
+            if !opts.attributes.is_empty() {
+                let attrs_vec: Vec<(&Attribute, &AttributeValue)> =
+                    opts.attributes.iter_set_values().collect::<Vec<_>>();
+                let attrs_bytes = serde_json::to_vec(&attrs_vec)
+                    .map_err(|e| Error::AttributesSerialization { source: e })?;
+                let mut attrs_file = OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(attrs_sidecar_path(&path))
+                    .map_err(|e| Error::UnableToCreateFile {
+                        source: e,
+                        path: attrs_sidecar_path(&path),
+                    })?;
+                attrs_file
+                    .write_all(&attrs_bytes)
+                    .map_err(|e| Error::UnableToCopyDataToFile { source: e })?;
+            }
+
             Ok(PutResult {
                 e_tag,
                 version: None,
@@ -456,9 +484,26 @@ impl ObjectStore for LocalFileSystem {
                 None => 0..meta.size,
             };
 
+            #[cfg(feature = "local-attributes")]
+            let attrs = {
+                let attrs_path = attrs_sidecar_path(&path);
+                if attrs_path.exists() {
+                    let (mut file, _) = open_file(&attrs_path)?;
+                    let attrs_vec: Vec<(Attribute, AttributeValue)> =
+                        serde_json::from_reader(&mut file)
+                            .map_err(|e| Error::AttributesSerialization { source: e })?;
+                    Attributes::from_iter(attrs_vec)
+                } else {
+                    Attributes::default()
+                }
+            };
+
+            #[cfg(not(feature = "local-attributes"))]
+            let attrs = Attributes::default();
+
             Ok(GetResult {
                 payload: GetResultPayload::File(file, path),
-                attributes: Attributes::default(),
+                attributes: attrs,
                 range,
                 meta,
             })
@@ -718,6 +763,22 @@ impl ObjectStore for LocalFileSystem {
         })
         .await
     }
+
+    async fn update_object_attributes(&self, _: &Path, _: Attributes) -> Result<()> {
+        Err(crate::Error::NotImplemented)
+    }
+
+    async fn get_object_attributes(&self, _: &Path) -> Result<Attributes> {
+        Err(crate::Error::NotImplemented)
+    }
+
+    async fn set_object_tags(&self, _: &Path, _: HashMap<String, String>) -> Result<()> {
+        Err(crate::Error::NotImplemented)
+    }
+
+    async fn get_object_tags(&self, _: &Path) -> Result<HashMap<String, String>> {
+        Err(crate::Error::NotImplemented)
+    }
 }
 
 /// Creates the parent directories of `path` or returns an error based on `source` if no parent
@@ -757,6 +818,13 @@ fn staged_upload_path(dest: &std::path::Path, suffix: &str) -> PathBuf {
     staging_path.push("#");
     staging_path.push(suffix);
     staging_path.into()
+}
+
+#[cfg(feature = "local-attributes")]
+fn attrs_sidecar_path(dest: &std::path::Path) -> PathBuf {
+    let mut sidecar_path = dest.as_os_str().to_owned();
+    sidecar_path.push("#attrs");
+    sidecar_path.into()
 }
 
 #[derive(Debug)]
@@ -1082,6 +1150,11 @@ mod tests {
         copy_rename_nonexistent_object(&integration).await;
         stream_get(&integration).await;
         put_opts(&integration, false).await;
+
+        #[cfg(feature = "local-attributes")]
+        {
+            put_get_attributes(&integration).await;
+        }
     }
 
     #[test]
@@ -1461,6 +1534,7 @@ mod tests {
             ("foo#123/test#34", false),
             ("foo😁/test#34", false),
             ("foo/test#😁34", true),
+            ("foo/test#attrs", false),
         ];
 
         for (case, expected) in cases {

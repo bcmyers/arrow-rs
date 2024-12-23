@@ -17,6 +17,7 @@
 
 //! A [`ChunkedStore`] that can be used to test streaming behaviour
 
+use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::Range;
 use std::sync::Arc;
@@ -28,8 +29,8 @@ use futures::StreamExt;
 
 use crate::path::Path;
 use crate::{
-    GetOptions, GetResult, GetResultPayload, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
-    PutMultipartOpts, PutOptions, PutResult,
+    Attributes, GetOptions, GetResult, GetResultPayload, ListResult, MultipartUpload, ObjectMeta,
+    ObjectStore, PutMultipartOpts, PutOptions, PutResult,
 };
 use crate::{PutPayload, Result};
 
@@ -171,6 +172,28 @@ impl ObjectStore for ChunkedStore {
 
     async fn copy_if_not_exists(&self, from: &Path, to: &Path) -> Result<()> {
         self.inner.copy_if_not_exists(from, to).await
+    }
+
+    async fn update_object_attributes(
+        &self,
+        location: &Path,
+        attributes: Attributes,
+    ) -> Result<()> {
+        self.inner
+            .update_object_attributes(location, attributes)
+            .await
+    }
+
+    async fn get_object_attributes(&self, location: &Path) -> Result<Attributes> {
+        self.inner.get_object_attributes(location).await
+    }
+
+    async fn set_object_tags(&self, location: &Path, tags: HashMap<String, String>) -> Result<()> {
+        self.inner.set_object_tags(location, tags).await
+    }
+
+    async fn get_object_tags(&self, location: &Path) -> Result<HashMap<String, String>> {
+        self.inner.get_object_tags(location).await
     }
 }
 
