@@ -39,6 +39,8 @@ use crate::{
     PutMultipartOpts, PutPayload, PutResult, Result, RetryConfig, TagSet,
 };
 use async_trait::async_trait;
+use aws_lc_rs::digest;
+use aws_lc_rs::digest::Context;
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
 use bytes::{Buf, Bytes};
@@ -53,8 +55,6 @@ use md5::{Digest, Md5};
 use percent_encoding::{utf8_percent_encode, PercentEncode};
 use quick_xml::events::{self as xml_events};
 use reqwest::{Client as ReqwestClient, Method, RequestBuilder, Response};
-use ring::digest;
-use ring::digest::Context;
 use serde::{Deserialize, Serialize};
 use snafu::{ResultExt, Snafu};
 use std::collections::HashMap;

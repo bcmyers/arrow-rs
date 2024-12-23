@@ -17,7 +17,7 @@
 
 [package]
 name = "object_store"
-version = "11.0.0"
+version = "0.11.0"
 edition = "2021"
 license = "MIT/Apache-2.0"
 readme = "README.md"
@@ -45,27 +45,29 @@ url = "2.2"
 walkdir = "2"
 
 # Cloud storage support
+aws-lc-rs = { version = "1.12.0", features = ["fips"] }
 base64 = { version = "0.22", default-features = false, features = ["std"], optional = true }
 hyper = { version = "1.2", default-features = false, optional = true }
+md-5 = { version = "0.10.6", default-features = false, optional = true }
 quick-xml = { version = "0.36.0", features = ["serialize", "overlapped-lists"], optional = true }
+quinn = { version = "0.11.6", default-features = false, features = ["aws-lc-rs-fips"] }
+quinn-proto = { version = "0.11.6", default-features = false, features = ["aws-lc-rs-fips"] }
+reqwest = { version = "0.12", default-features = false, features = ["http2", "rustls-tls-native-roots-no-provider"], optional = true }
+rustls = { version = "0.23.20", default-features = false, features = ["aws_lc_rs", "fips", "logging", "std", "tls12"] }
+rustls-pemfile = { version = "2.0", default-features = false, features = ["std"], optional = true }
 serde = { version = "1.0", default-features = false, features = ["derive"], optional = true }
 serde_json = { version = "1.0", default-features = false, optional = true }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "http2"], optional = true }
-ring = { version = "0.17", default-features = false, features = ["std"], optional = true }
-rustls-pemfile = { version = "2.0", default-features = false, features = ["std"], optional = true }
 tokio = { version = "1.25.0", features = ["sync", "macros", "rt", "time", "io-util"] }
-md-5 = { version = "0.10.6", default-features = false, optional = true }
 
 [target.'cfg(target_family="unix")'.dev-dependencies]
 nix = { version = "0.29.0", features = ["fs"] }
 
 [features]
-cloud = ["serde", "serde_json", "quick-xml", "hyper", "reqwest", "reqwest/json", "reqwest/stream", "chrono/serde", "base64", "ring"]
+cloud = ["serde", "serde_json", "quick-xml", "hyper", "reqwest", "reqwest/json", "reqwest/stream", "chrono/serde", "base64"]
 azure = ["cloud"]
 gcp = ["cloud", "rustls-pemfile"]
 aws = ["cloud", "md-5"]
 http = ["cloud"]
-tls-webpki-roots = ["reqwest?/rustls-tls-webpki-roots"]
 integration = []
 local-attributes = ["serde", "serde_json", "serde_json/std"]
 test = []

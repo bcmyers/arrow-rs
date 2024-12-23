@@ -23,6 +23,7 @@ use crate::gcp::{GcpSigningCredentialProvider, STORE};
 use crate::util::{hex_digest, hex_encode, STRICT_ENCODE_SET};
 use crate::{RetryConfig, StaticCredentialProvider};
 use async_trait::async_trait;
+use aws_lc_rs::rsa;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
 use chrono::{DateTime, Utc};
@@ -31,7 +32,6 @@ use hyper::HeaderMap;
 use itertools::Itertools;
 use percent_encoding::utf8_percent_encode;
 use reqwest::{Client, Method};
-use ring::signature::RsaKeyPair;
 use serde::Deserialize;
 use snafu::{ResultExt, Snafu};
 use std::collections::BTreeMap;
@@ -69,10 +69,14 @@ pub enum Error {
     MissingKey,
 
     #[snafu(display("Invalid RSA key: {}", source), context(false))]
-    InvalidKey { source: ring::error::KeyRejected },
+    InvalidKey {
+        source: aws_lc_rs::error::KeyRejected,
+    },
 
     #[snafu(display("Error signing: {}", source))]
-    Sign { source: ring::error::Unspecified },
+    Sign {
+        source: aws_lc_rs::error::Unspecified,
+    },
 
     #[snafu(display("Error encoding jwt payload: {}", source))]
     Encode { source: serde_json::Error },
@@ -115,7 +119,7 @@ pub struct GcpSigningCredential {
 
 /// A private RSA key for a service account
 #[derive(Debug)]
-pub struct ServiceAccountKey(RsaKeyPair);
+pub struct ServiceAccountKey(rsa::KeyPair);
 
 impl ServiceAccountKey {
     /// Parses a pem-encoded RSA key
@@ -136,20 +140,20 @@ impl ServiceAccountKey {
 
     /// Parses an unencrypted PKCS#8-encoded RSA private key.
     pub fn from_pkcs8(key: &[u8]) -> Result<Self> {
-        Ok(Self(RsaKeyPair::from_pkcs8(key)?))
+        Ok(Self(rsa::KeyPair::from_pkcs8(key)?))
     }
 
     /// Parses an unencrypted PKCS#8-encoded RSA private key.
     pub fn from_der(key: &[u8]) -> Result<Self> {
-        Ok(Self(RsaKeyPair::from_der(key)?))
+        Ok(Self(rsa::KeyPair::from_der(key)?))
     }
 
     fn sign(&self, string_to_sign: &str) -> Result<String> {
-        let mut signature = vec![0; self.0.public().modulus_len()];
+        let mut signature = vec![0; self.0.public_modulus_len()];
         self.0
             .sign(
-                &ring::signature::RSA_PKCS1_SHA256,
-                &ring::rand::SystemRandom::new(),
+                &aws_lc_rs::signature::RSA_PKCS1_SHA256,
+                &aws_lc_rs::rand::SystemRandom::new(),
                 string_to_sign.as_bytes(),
                 &mut signature,
             )
@@ -280,12 +284,12 @@ impl TokenProvider for SelfSignedJwt {
 
         let claim_str = b64_encode_obj(&claims)?;
         let message = [jwt_header.as_ref(), claim_str.as_ref()].join(".");
-        let mut sig_bytes = vec![0; self.private_key.0.public().modulus_len()];
+        let mut sig_bytes = vec![0; self.private_key.0.public_modulus_len()];
         self.private_key
             .0
             .sign(
-                &ring::signature::RSA_PKCS1_SHA256,
-                &ring::rand::SystemRandom::new(),
+                &aws_lc_rs::signature::RSA_PKCS1_SHA256,
+                &aws_lc_rs::rand::SystemRandom::new(),
                 message.as_bytes(),
                 &mut sig_bytes,
             )
@@ -419,7 +423,7 @@ impl TokenProvider for InstanceCredentialProvider {
     /// Since the connection is local we need to enable http access and don't actually use the client object passed in.
     /// Respects the `GCE_METADATA_HOST`, `GCE_METADATA_ROOT`, and `GCE_METADATA_IP`
     /// environment variables.
-    ///  
+    ///
     /// References: <https://googleapis.dev/python/google-auth/latest/reference/google.auth.environment_vars.html>
     async fn fetch_token(
         &self,
@@ -488,7 +492,7 @@ impl TokenProvider for InstanceSigningCredentialProvider {
     /// Since the connection is local we need to enable http access and don't actually use the client object passed in.
     /// Respects the `GCE_METADATA_HOST`, `GCE_METADATA_ROOT`, and `GCE_METADATA_IP`
     /// environment variables.
-    ///  
+    ///
     /// References: <https://googleapis.dev/python/google-auth/latest/reference/google.auth.environment_vars.html>
     async fn fetch_token(
         &self,

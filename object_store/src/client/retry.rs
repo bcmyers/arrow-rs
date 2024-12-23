@@ -424,8 +424,13 @@ mod tests {
             retry_timeout: Duration::from_secs(1000),
         };
 
+        rustls::crypto::aws_lc_rs::default_provider()
+            .install_default()
+            .expect("default provider already set elsewhere");
+
         let client = Client::builder()
             .timeout(Duration::from_millis(100))
+            .use_rustls_tls()
             .build()
             .unwrap();
 

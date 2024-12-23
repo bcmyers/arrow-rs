@@ -513,6 +513,8 @@ impl ClientOptions {
     pub(crate) fn client(&self) -> Result<Client> {
         let mut builder = ClientBuilder::new();
 
+        builder = builder.use_rustls_tls();
+
         match &self.user_agent {
             Some(user_agent) => builder = builder.user_agent(user_agent.get()?),
             None => builder = builder.user_agent(DEFAULT_USER_AGENT),
